@@ -5,10 +5,10 @@ import os
 import uuid
 from agent import DataAnalysisAgent
 
-from flask_cors import CORS
+#from flask_cors import CORS
 
 app = Flask(__name__)
-CORS(app) # Adiciona CORS ao aplicativo Flask app
+#CORS(app) # Adiciona CORS ao aplicativo Flask app
 app.secret_key = os.urandom(24) # Chave secreta para gerenciar sessões
 app.config["UPLOAD_FOLDER"] = "uploads"
 
