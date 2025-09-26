@@ -1,0 +1,8 @@
+flask
+pandas
+matplotlib
+seaborn
+langchain-experimental
+langchain-openai
+python-dotenv
+pyngrok
