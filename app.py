@@ -153,6 +153,12 @@ def ask_question():
 
     return render_template_string(HTML_TEMPLATE, message=session['message'], csv_loaded=session.get('csv_loaded'))
 
+# Configuração para produção
+if __name__ == "__main__":
+    port = int(os.environ.get('PORT', 5000))
+    # Render usa a variável PORT automaticamente
+    app.run(host='0.0.0.0', port=port, debug=False)
+
 if __name__ == '__main__':
     app.run(debug=False, host='0.0.0.0', port=5000)
 
