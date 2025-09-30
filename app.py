@@ -20,6 +20,16 @@ warnings.filterwarnings("ignore")
 plt.switch_backend('Agg')
 load_dotenv()
 
+###########################################################################
+# Teste da chave logo no início
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+if OPENAI_API_KEY:
+    print("✅ OPENAI_API_KEY detectada. Tamanho:", len(OPENAI_API_KEY))
+else:
+    print("❌ OPENAI_API_KEY não encontrada no ambiente.")
+###########################################################################
+
+
 app = Flask(__name__)
 CORS(app)
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024
