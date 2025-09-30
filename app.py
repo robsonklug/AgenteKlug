@@ -14,39 +14,56 @@ from langchain_core.tools import Tool
 import warnings
 import sys
 import traceback
+from io import StringIO
+from datetime import datetime
 
 # Configurações
 warnings.filterwarnings("ignore")
 plt.switch_backend('Agg')
 load_dotenv()
 
-###########################################################################
-# Teste da chave logo no início
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
-if OPENAI_API_KEY:
-    print("✅ OPENAI_API_KEY detectada. Tamanho:", len(OPENAI_API_KEY))
-else:
-    print("❌ OPENAI_API_KEY não encontrada no ambiente.")
-###########################################################################
+# Define API key once at the start
+API_KEY = os.environ.get("OPENAI_API_KEY")
 
+# Custom stream to capture print statements
+class LogStream(StringIO):
+    def __init__(self):
+        super().__init__()
+        self.logs = []
 
-app = Flask(__name__)
-CORS(app)
-app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024
+    def write(self, text):
+        super().write(text)
+        if text.strip() and text != '\n':  # Only store non-empty lines
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            self.logs.append(f"[{timestamp}] {text.strip()}")
+            # Keep only the last 100 logs to prevent memory issues
+            self.logs = self.logs[-100:]
 
-# Log de inicialização
+    def flush(self):
+        pass
+
+# Initialize log stream
+log_stream = LogStream()
+sys.stdout = log_stream
+
+# Initial log messages
 print("=" * 80)
 print("INICIANDO ANALISADOR DE DADOS COM IA")
 print("=" * 80)
 print(f"Python: {sys.version.split()[0]}")
 print(f"Pandas: {pd.__version__}")
 
-api_key = OPENAI_API_KEY
-if api_key:
-    print(f"OpenAI API: Configurada ({api_key[:20]}...)")
+if API_KEY:
+    print(f"✅ OPENAI_API_KEY detectada. Tamanho: {len(API_KEY)}")
+    print(f"OpenAI API: Configurada ({API_KEY[:20]}...)")
 else:
+    print("❌ OPENAI_API_KEY não encontrada no ambiente.")
     print("OpenAI API: NAO CONFIGURADA")
 print("=" * 80 + "\n")
+
+app = Flask(__name__)
+CORS(app)
+app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024
 
 class DataAnalysisAgent:
     def __init__(self):
@@ -55,13 +72,12 @@ class DataAnalysisAgent:
         self.agent_executor = None
         self.error_message = None
         
-        api_key = OPENAI_API_KEY
-        if api_key:
+        if API_KEY:
             try:
                 self.llm = ChatOpenAI(
                     temperature=0, 
                     model="gpt-4o-mini",
-                    openai_api_key=api_key
+                    openai_api_key=API_KEY
                 )
                 print("ChatOpenAI inicializado")
             except Exception as e:
@@ -71,6 +87,7 @@ class DataAnalysisAgent:
         else:
             self.llm = None
             self.error_message = "Chave da API OpenAI não configurada"
+            print(self.error_message)
 
     def load_csv(self, file_path):
         print(f"\n{'='*80}")
@@ -88,7 +105,7 @@ class DataAnalysisAgent:
             print(f"      Colunas: {len(self.df.columns)}")
             
             print("[3/4] Verificando API...")
-            if not OPENAI_API_KEY:
+            if not API_KEY:
                 print("      AVISO: API não configurada")
                 self.agent_executor = None
                 return True
@@ -208,8 +225,8 @@ agent = DataAnalysisAgent()
 
 @app.route('/')
 def index():
-    api_status = "Configurada" if OPENAI_API_KEY else "Não configurada"
-    status_color = "#4CAF50" if OPENAI_API_KEY else "#f44336"
+    api_status = "Configurada" if API_KEY else "Não configurada"
+    status_color = "#4CAF50" if API_KEY else "#f44336"
     
     html = f'''
 <!DOCTYPE html>
@@ -280,6 +297,20 @@ def index():
             overflow-y: auto;
             padding: 25px;
             background: #fafafa;
+        }}
+        .log-container {{
+            border: 2px solid #e0e0e0;
+            border-radius: 15px;
+            overflow: hidden;
+            margin-top: 20px;
+        }}
+        .log-messages {{
+            max-height: 300px;
+            overflow-y: auto;
+            padding: 25px;
+            background: #fafafa;
+            font-family: monospace;
+            font-size: 13px;
         }}
         .message {{
             margin: 15px 0;
@@ -386,12 +417,21 @@ def index():
                     </div>
                 </div>
             </div>
+            
+            <div class="section">
+                <h2 class="section-title">3. Logs do Sistema</h2>
+                <div class="log-container">
+                    <div class="log-messages" id="logMessages">
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 
     <script>
     const fileInput = document.getElementById('fileInput');
     const chatMessages = document.getElementById('chatMessages');
+    const logMessages = document.getElementById('logMessages');
     const queryInput = document.getElementById('queryInput');
     const sendBtn = document.getElementById('sendBtn');
 
@@ -468,6 +508,21 @@ def index():
         setTimeout(() => statusDiv.innerHTML = '', 8000);
     }}
 
+    async function fetchLogs() {{
+        try {{
+            const response = await fetch('/logs');
+            const result = await response.json();
+            logMessages.innerHTML = result.logs.map(log => `<pre>${{log}}</pre>`).join('');
+            logMessages.scrollTop = logMessages.scrollHeight;
+        }} catch (error) {{
+            console.error('Erro aoientas ao carregar logs:', error);
+        }}
+    }}
+
+    // Poll logs every 2 seconds
+    setInterval(fetchLogs, 2000);
+    fetchLogs(); // Initial fetch
+
     queryInput.addEventListener('keypress', (e) => {{
         if (e.key === 'Enter' && !sendBtn.disabled) sendQuery();
     }});
@@ -523,11 +578,15 @@ def ask():
     except Exception as e:
         return jsonify({'response': f'Erro: {str(e)}'})
 
+@app.route('/logs')
+def get_logs():
+    return jsonify({'logs': log_stream.logs})
+
 @app.route('/health')
 def health():
     return jsonify({
         'status': 'ok',
-        'openai': 'configured' if os.environ.get('OPENAI_API_KEY') else 'missing',
+        'openai': 'configured' if API_KEY else 'missing',
         'dataset': 'loaded' if agent.df is not None else 'empty'
     })
 
