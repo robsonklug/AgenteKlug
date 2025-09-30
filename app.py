@@ -25,7 +25,7 @@ load_dotenv()
 API_KEY = os.environ.get("OPENAI_API_KEY")
 
 # Custom stream to capture print statements
-class LogStream(StringIO):
+class LogStream(io.StringIO):
     def __init__(self):
         super().__init__()
         self.logs = []
