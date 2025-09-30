@@ -15,7 +15,7 @@ import warnings
 import sys
 import traceback
 from datetime import datetime
-from io import StringIO  # import necessário para LogStream
+from io import StringIO
 
 # Configurações
 warnings.filterwarnings("ignore")
@@ -25,27 +25,24 @@ load_dotenv()
 # Lê a chave apenas uma vez
 API_KEY = os.environ.get("OPENAI_API_KEY")
 
-# Custom stream to capture print statements (logs exibíveis via /logs)
+# Custom stream to capture print statements
 class LogStream(StringIO):
     def __init__(self):
         super().__init__()
         self.logs = []
 
     def write(self, text):
-        # mantém comportamento padrão para que prints apareçam (útil em dev)
         super().write(text)
-        # armazena linhas não vazias com timestamp
         if isinstance(text, str) and text.strip():
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             self.logs.append(f"[{timestamp}] {text.strip()}")
-            # limita para evitar crescimento ilimitado
             if len(self.logs) > 500:
                 self.logs = self.logs[-500:]
 
     def flush(self):
         pass
 
-# Redireciona stdout para o log interno (facilita visualizar em /logs)
+# Redireciona stdout para o log interno
 log_stream = LogStream()
 sys.stdout = log_stream
 
@@ -66,7 +63,7 @@ print("=" * 80 + "\n")
 
 app = Flask(__name__)
 CORS(app)
-app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max upload
+app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024
 
 class DataAnalysisAgent:
     def __init__(self):
@@ -103,7 +100,6 @@ class DataAnalysisAgent:
                 raise FileNotFoundError("Arquivo não encontrado")
             
             print("[2/4] Carregando CSV...")
-            # tenta ler com engine default; você pode adaptar (sep, encoding) se necessário
             self.df = pd.read_csv(file_path)
             print(f"      Linhas: {len(self.df):,}")
             print(f"      Colunas: {len(self.df.columns)}")
@@ -136,7 +132,6 @@ class DataAnalysisAgent:
             return
         
         try:
-            # parâmetros limitados para evitar loops e timeouts longos no Render
             self.agent_executor = create_pandas_dataframe_agent(
                 llm=self.llm,
                 df=self.df,
@@ -154,16 +149,10 @@ class DataAnalysisAgent:
             self.agent_executor = None
 
     def run_query(self, query: str) -> dict:
-        """
-        Retorna dict sempre com as chaves:
-            - response: texto com a resposta
-            - image: base64 string ou None
-        """
         if self.df is None:
             return {"response": "Nenhum dataset carregado. Faça upload de um CSV primeiro.", "image": None}
 
         if self.agent_executor is None:
-            # fallback textual usando pandas
             return {"response": self._handle_basic_queries(query), "image": None}
 
         try:
@@ -173,17 +162,12 @@ Colunas: {', '.join(self.df.columns[:10])}
 
 Pergunta: {query}
 """
-
-            # Limpa figuras antigas
             plt.clf()
 
-            # Executa o agente (LangChain)
-            # Note: invoke pode demorar; por isso limitamos max_execution_time e max_iterations
             print(f"[run_query] Executando agente para pergunta: {query[:200]}")
             result = self.agent_executor.invoke({"input": context})
             response_text = result.get("output", "Sem resposta")
 
-            # Tentativa segura de capturar figura (se gerada)
             image_data = None
             try:
                 if plt.get_fignums():
@@ -196,11 +180,10 @@ Pergunta: {query}
                 print(f"⚠️ Erro ao salvar gráfico: {e}")
                 image_data = None
 
-            print(f"[run_query] Resposta gerada (tamanho {len(response_text)} chars approx). image? {'sim' if image_data else 'não'}")
+            print(f"[run_query] Resposta gerada. image? {'sim' if image_data else 'não'}")
             return {"response": response_text, "image": image_data}
 
         except Exception as e:
-            # garante que figura seja fechada em caso de erro
             try:
                 plt.close()
             except:
@@ -215,7 +198,6 @@ Pergunta: {query}
             elif "insufficient_quota" in msg:
                 return {"response": "💸 Cota esgotada. Adicione créditos em platform.openai.com", "image": None}
             else:
-                # fallback seguro para consultas básicas
                 return {"response": self._handle_basic_queries(query), "image": None}
 
     def _handle_basic_queries(self, query: str) -> str:
@@ -266,7 +248,6 @@ Pergunta: {query}
         numbers = re.findall(r'\d+', text)
         return min(int(numbers[0]), 100) if numbers else default
 
-# instancia o agente global
 agent = DataAnalysisAgent()
 
 @app.route('/')
@@ -274,8 +255,9 @@ def index():
     api_status = "Configurada" if API_KEY else "Não configurada"
     status_color = "#4CAF50" if API_KEY else "#f44336"
     
-    # HTML + JS completo (igual ao anterior, com painel, upload, chat e logs)
-    html = f'''
+    # IMPORTANTE: Usar """ para evitar conflitos com f-string
+    # OU escapar TODAS as chaves do JavaScript com {{}}
+    html = '''
 <!DOCTYPE html>
 <html>
 <head>
@@ -283,45 +265,45 @@ def index():
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
-        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-        body {{ 
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             min-height: 100vh;
             padding: 20px;
-        }}
-        .container {{ 
+        }
+        .container { 
             max-width: 1200px;
             margin: 0 auto;
             background: white;
             border-radius: 20px;
             box-shadow: 0 20px 60px rgba(0,0,0,0.3);
             overflow: hidden;
-        }}
-        .header {{ 
+        }
+        .header { 
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
             padding: 40px;
             text-align: center;
-        }}
-        .header h1 {{ font-size: 2.5em; margin-bottom: 10px; }}
-        .api-status {{
+        }
+        .header h1 { font-size: 2.5em; margin-bottom: 10px; }
+        .api-status {
             display: inline-block;
             padding: 8px 20px;
-            background: {status_color};
+            background: ''' + status_color + ''';
             border-radius: 20px;
             margin-top: 10px;
-        }}
-        .content {{ padding: 40px; }}
-        .section {{ margin-bottom: 40px; }}
-        .section-title {{ 
+        }
+        .content { padding: 40px; }
+        .section { margin-bottom: 40px; }
+        .section-title { 
             color: #667eea;
             font-size: 1.5em;
             margin-bottom: 20px;
             padding-bottom: 10px;
             border-bottom: 3px solid #667eea;
-        }}
-        .upload-area {{
+        }
+        .upload-area {
             border: 3px dashed #667eea;
             padding: 50px;
             text-align: center;
@@ -329,81 +311,81 @@ def index():
             background: #f5f7fa;
             cursor: pointer;
             transition: all 0.3s;
-        }}
-        .upload-area:hover {{
+        }
+        .upload-area:hover {
             background: #e8ecf1;
             transform: translateY(-2px);
-        }}
-        .chat-container {{
+        }
+        .chat-container {
             border: 2px solid #e0e0e0;
             border-radius: 15px;
             overflow: hidden;
-        }}
-        .chat-messages {{
+        }
+        .chat-messages {
             height: 500px;
             overflow-y: auto;
             padding: 25px;
             background: #fafafa;
-        }}
-        .log-container {{
+        }
+        .log-container {
             border: 2px solid #e0e0e0;
             border-radius: 15px;
             overflow: hidden;
             margin-top: 20px;
-        }}
-        .log-messages {{
+        }
+        .log-messages {
             max-height: 300px;
             overflow-y: auto;
             padding: 25px;
             background: #fafafa;
             font-family: monospace;
             font-size: 13px;
-        }}
-        .message {{
+        }
+        .message {
             margin: 15px 0;
             padding: 15px 20px;
             border-radius: 15px;
             animation: slideIn 0.3s;
             max-width: 85%;
-        }}
-        @keyframes slideIn {{
-            from {{ opacity: 0; transform: translateY(10px); }}
-            to {{ opacity: 1; transform: translateY(0); }}
-        }}
-        .user {{ 
+        }
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .user { 
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
             margin-left: auto;
-        }}
-        .agent {{
+        }
+        .agent {
             background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
             color: white;
-        }}
-        .system {{
+        }
+        .system {
             background: #e0e0e0;
             color: #333;
             text-align: center;
             margin: 10px auto;
-        }}
-        .chat-input {{
+        }
+        .chat-input {
             display: flex;
             gap: 15px;
             padding: 20px;
             background: white;
             border-top: 2px solid #e0e0e0;
-        }}
-        .chat-input input {{
+        }
+        .chat-input input {
             flex: 1;
             padding: 15px 20px;
             border: 2px solid #e0e0e0;
             border-radius: 25px;
             font-size: 15px;
-        }}
-        .chat-input input:focus {{
+        }
+        .chat-input input:focus {
             outline: none;
             border-color: #667eea;
-        }}
-        button {{
+        }
+        button {
             padding: 15px 35px;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
@@ -412,30 +394,30 @@ def index():
             cursor: pointer;
             font-weight: 600;
             transition: all 0.3s;
-        }}
-        button:hover {{ transform: translateY(-2px); }}
-        button:disabled {{ opacity: 0.5; cursor: not-allowed; }}
-        .status {{
+        }
+        button:hover { transform: translateY(-2px); }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+        .status {
             padding: 15px 20px;
             border-radius: 10px;
             margin: 15px 0;
-        }}
-        .success {{ background: #d4edda; color: #155724; }}
-        .error {{ background: #f8d7da; color: #721c24; }}
-        pre {{
+        }
+        .success { background: #d4edda; color: #155724; }
+        .error { background: #f8d7da; color: #721c24; }
+        pre {
             background: rgba(0,0,0,0.05);
             padding: 12px;
             border-radius: 8px;
             font-size: 13px;
             overflow-x: auto;
             white-space: pre-wrap;
-        }}
-        .plot-image {{
+        }
+        .plot-image {
             max-width: 100%;
             margin-top: 10px;
             border-radius: 8px;
             border: 1px solid #e0e0e0;
-        }}
+        }
     </style>
 </head>
 <body>
@@ -443,7 +425,7 @@ def index():
         <div class="header">
             <h1>Analisador de Dados com IA</h1>
             <p>GPT-4o-mini + LangChain + Pandas</p>
-            <div class="api-status">API: {api_status}</div>
+            <div class="api-status">API: ''' + api_status + '''</div>
         </div>
         
         <div class="content">
@@ -580,9 +562,8 @@ def index():
         }
     }
 
-    // Poll logs every 2 seconds
     setInterval(fetchLogs, 2000);
-    fetchLogs(); // Initial fetch
+    fetchLogs();
 
     queryInput.addEventListener('keypress', (e) => {
         if (e.key === 'Enter' && !sendBtn.disabled) sendQuery();
@@ -635,7 +616,6 @@ def ask():
             return jsonify({'response': 'Faça uma pergunta', 'image': None})
         
         result = agent.run_query(query)
-        # garante chaves no retorno
         return jsonify({'response': result.get('response', 'Sem resposta'), 'image': result.get('image', None)})
         
     except Exception as e:
@@ -644,7 +624,6 @@ def ask():
 
 @app.route('/logs')
 def get_logs():
-    # retorna as últimas entradas do log em JSON
     return jsonify({'logs': log_stream.logs})
 
 @app.route('/health')
