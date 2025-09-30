@@ -14,7 +14,6 @@ from langchain_core.tools import Tool
 import warnings
 import sys
 import traceback
-from io import StringIO
 from datetime import datetime
 
 # Configurações
@@ -148,12 +147,12 @@ class DataAnalysisAgent:
             print(f"      Erro: {str(e)}")
             self.agent_executor = None
 
-    def run_query(self, query: str) -> str:
+    def run_query(self, query: str) -> dict:
         if self.df is None:
-            return "Nenhum dataset carregado. Faça upload de um CSV primeiro."
+            return {"response": "Nenhum dataset carregado. Faça upload de um CSV primeiro.", "image": None}
         
         if self.agent_executor is None:
-            return self._handle_basic_queries(query)
+            return {"response": self._handle_basic_queries(query), "image": None}
         
         try:
             context = f"""
@@ -163,18 +162,32 @@ Colunas: {', '.join(self.df.columns[:10])}
 Pergunta: {query}
 """
             
+            # Capture any plots generated
+            plt.clf()  # Clear any existing plots
             result = self.agent_executor.invoke({"input": context})
-            return result.get("output", "Sem resposta")
+            response_text = result.get("output", "Sem resposta")
+            
+            # Check if a plot was generated
+            image_data = None
+            if plt.get_fignums():  # Check if any figures exist
+                buf = io.BytesIO()
+                plt.savefig(buf, format='png', bbox_inches='tight')
+                buf.seek(0)
+                image_data = base64.b64encode(buf.getvalue()).decode('utf-8')
+                plt.close()
+            
+            return {"response": response_text, "image": image_data}
             
         except Exception as e:
+            plt.close()  # Ensure plot is closed on error
             if "rate limit" in str(e).lower():
-                return "Limite de requisições atingido. Aguarde alguns segundos."
+                return {"response": "Limite de requisições atingido. Aguarde alguns segundos.", "image": None}
             elif "invalid api key" in str(e).lower():
-                return "Chave da API inválida. Verifique a configuração."
+                return {"response": "Chave da API inválida. Verifique a configuração.", "image": None}
             elif "insufficient_quota" in str(e).lower():
-                return "Cota esgotada. Adicione créditos em platform.openai.com"
+                return {"response": "Cota esgotada. Adicione créditos em platform.openai.com", "image": None}
             else:
-                return self._handle_basic_queries(query)
+                return {"response": self._handle_basic_queries(query), "image": None}
 
     def _handle_basic_queries(self, query: str) -> str:
         query_lower = query.lower()
@@ -383,6 +396,12 @@ def index():
             overflow-x: auto;
             white-space: pre-wrap;
         }}
+        .plot-image {{
+            max-width: 100%;
+            margin-top: 10px;
+            border-radius: 8px;
+            border: 1px solid #e0e0e0;
+        }}
     </style>
 </head>
 <body>
@@ -482,13 +501,13 @@ def index():
                 body: JSON.stringify({{ query: query }})
             }});
             const result = await response.json();
-            addMessage('IA', result.response);
+            addMessage('IA', result.response, result.image);
         }} catch (error) {{
             addMessage('Erro', error.message);
         }}
     }}
 
-    function addMessage(sender, message) {{
+    function addMessage(sender, message, image = null) {{
         const div = document.createElement('div');
         let className = 'message ';
         if (sender === 'Você') className += 'user';
@@ -497,6 +516,13 @@ def index():
         
         div.className = className;
         div.innerHTML = `<strong>${{sender}}:</strong><pre>${{message}}</pre>`;
+        
+        if (image) {{
+            const img = document.createElement('img');
+            img.src = `data:image/png;base64,${{image}}`;
+            img.className = 'plot-image';
+            div.appendChild(img);
+        }}
         
         chatMessages.appendChild(div);
         chatMessages.scrollTop = chatMessages.scrollHeight;
@@ -515,7 +541,7 @@ def index():
             logMessages.innerHTML = result.logs.map(log => `<pre>${{log}}</pre>`).join('');
             logMessages.scrollTop = logMessages.scrollHeight;
         }} catch (error) {{
-            console.error('Erro aoientas ao carregar logs:', error);
+            console.error('Erro ao carregar logs:', error);
         }}
     }}
 
@@ -570,13 +596,13 @@ def ask():
         query = data.get('query', '')
         
         if not query:
-            return jsonify({'response': 'Faça uma pergunta'})
+            return jsonify({'response': 'Faça uma pergunta', 'image': None})
         
-        response = agent.run_query(query)
-        return jsonify({'response': response})
+        result = agent.run_query(query)
+        return jsonify({'response': result['response'], 'image': result['image']})
         
     except Exception as e:
-        return jsonify({'response': f'Erro: {str(e)}'})
+        return jsonify({'response': f'Erro: {str(e)}', 'image': None})
 
 @app.route('/logs')
 def get_logs():
