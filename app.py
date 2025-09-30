@@ -15,37 +15,41 @@ import warnings
 import sys
 import traceback
 from datetime import datetime
+from io import StringIO  # import necessário para LogStream
 
 # Configurações
 warnings.filterwarnings("ignore")
 plt.switch_backend('Agg')
 load_dotenv()
 
-# Define API key once at the start
+# Lê a chave apenas uma vez
 API_KEY = os.environ.get("OPENAI_API_KEY")
 
-# Custom stream to capture print statements
-class LogStream(io.StringIO):
+# Custom stream to capture print statements (logs exibíveis via /logs)
+class LogStream(StringIO):
     def __init__(self):
         super().__init__()
         self.logs = []
 
     def write(self, text):
+        # mantém comportamento padrão para que prints apareçam (útil em dev)
         super().write(text)
-        if text.strip() and text != '\n':  # Only store non-empty lines
+        # armazena linhas não vazias com timestamp
+        if isinstance(text, str) and text.strip():
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             self.logs.append(f"[{timestamp}] {text.strip()}")
-            # Keep only the last 100 logs to prevent memory issues
-            self.logs = self.logs[-100:]
+            # limita para evitar crescimento ilimitado
+            if len(self.logs) > 500:
+                self.logs = self.logs[-500:]
 
     def flush(self):
         pass
 
-# Initialize log stream
+# Redireciona stdout para o log interno (facilita visualizar em /logs)
 log_stream = LogStream()
 sys.stdout = log_stream
 
-# Initial log messages
+# Mensagens iniciais
 print("=" * 80)
 print("INICIANDO ANALISADOR DE DADOS COM IA")
 print("=" * 80)
@@ -62,7 +66,7 @@ print("=" * 80 + "\n")
 
 app = Flask(__name__)
 CORS(app)
-app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024
+app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max upload
 
 class DataAnalysisAgent:
     def __init__(self):
@@ -96,9 +100,10 @@ class DataAnalysisAgent:
         try:
             print("[1/4] Validando arquivo...")
             if not os.path.exists(file_path):
-                raise FileNotFoundError(f"Arquivo não encontrado")
+                raise FileNotFoundError("Arquivo não encontrado")
             
             print("[2/4] Carregando CSV...")
+            # tenta ler com engine default; você pode adaptar (sep, encoding) se necessário
             self.df = pd.read_csv(file_path)
             print(f"      Linhas: {len(self.df):,}")
             print(f"      Colunas: {len(self.df.columns)}")
@@ -131,15 +136,16 @@ class DataAnalysisAgent:
             return
         
         try:
+            # parâmetros limitados para evitar loops e timeouts longos no Render
             self.agent_executor = create_pandas_dataframe_agent(
                 llm=self.llm,
                 df=self.df,
-                verbose=True,
+                verbose=False,
                 agent_type="openai-tools",
                 allow_dangerous_code=True,
                 handle_parsing_errors=True,
-                max_iterations=15,
-                max_execution_time=90
+                max_iterations=3,
+                max_execution_time=20
             )
             print("      Agente IA inicializado")
             
@@ -148,12 +154,18 @@ class DataAnalysisAgent:
             self.agent_executor = None
 
     def run_query(self, query: str) -> dict:
+        """
+        Retorna dict sempre com as chaves:
+            - response: texto com a resposta
+            - image: base64 string ou None
+        """
         if self.df is None:
             return {"response": "Nenhum dataset carregado. Faça upload de um CSV primeiro.", "image": None}
-        
+
         if self.agent_executor is None:
+            # fallback textual usando pandas
             return {"response": self._handle_basic_queries(query), "image": None}
-        
+
         try:
             context = f"""
 Dataset: {len(self.df):,} linhas, {len(self.df.columns)} colunas
@@ -161,32 +173,49 @@ Colunas: {', '.join(self.df.columns[:10])}
 
 Pergunta: {query}
 """
-            
-            # Capture any plots generated
-            plt.clf()  # Clear any existing plots
+
+            # Limpa figuras antigas
+            plt.clf()
+
+            # Executa o agente (LangChain)
+            # Note: invoke pode demorar; por isso limitamos max_execution_time e max_iterations
+            print(f"[run_query] Executando agente para pergunta: {query[:200]}")
             result = self.agent_executor.invoke({"input": context})
             response_text = result.get("output", "Sem resposta")
-            
-            # Check if a plot was generated
+
+            # Tentativa segura de capturar figura (se gerada)
             image_data = None
-            if plt.get_fignums():  # Check if any figures exist
-                buf = io.BytesIO()
-                plt.savefig(buf, format='png', bbox_inches='tight')
-                buf.seek(0)
-                image_data = base64.b64encode(buf.getvalue()).decode('utf-8')
-                plt.close()
-            
+            try:
+                if plt.get_fignums():
+                    buf = io.BytesIO()
+                    plt.savefig(buf, format="png", bbox_inches="tight")
+                    buf.seek(0)
+                    image_data = base64.b64encode(buf.getvalue()).decode("utf-8")
+                    plt.close()
+            except Exception as e:
+                print(f"⚠️ Erro ao salvar gráfico: {e}")
+                image_data = None
+
+            print(f"[run_query] Resposta gerada (tamanho {len(response_text)} chars approx). image? {'sim' if image_data else 'não'}")
             return {"response": response_text, "image": image_data}
-            
+
         except Exception as e:
-            plt.close()  # Ensure plot is closed on error
-            if "rate limit" in str(e).lower():
-                return {"response": "Limite de requisições atingido. Aguarde alguns segundos.", "image": None}
-            elif "invalid api key" in str(e).lower():
-                return {"response": "Chave da API inválida. Verifique a configuração.", "image": None}
-            elif "insufficient_quota" in str(e).lower():
-                return {"response": "Cota esgotada. Adicione créditos em platform.openai.com", "image": None}
+            # garante que figura seja fechada em caso de erro
+            try:
+                plt.close()
+            except:
+                pass
+
+            msg = str(e).lower()
+            print(f"[run_query] ERRO durante execução do agente: {e}")
+            if "rate limit" in msg:
+                return {"response": "⚠️ Limite de requisições atingido. Aguarde alguns segundos.", "image": None}
+            elif "invalid api key" in msg:
+                return {"response": "❌ Chave da API inválida. Verifique a configuração.", "image": None}
+            elif "insufficient_quota" in msg:
+                return {"response": "💸 Cota esgotada. Adicione créditos em platform.openai.com", "image": None}
             else:
+                # fallback seguro para consultas básicas
                 return {"response": self._handle_basic_queries(query), "image": None}
 
     def _handle_basic_queries(self, query: str) -> str:
@@ -218,15 +247,18 @@ Pergunta: {query}
                 return f"Valores nulos:\n{result.to_string()}" if len(result) > 0 else "Sem valores nulos"
             
             else:
-                return """Consultas disponíveis:
-- primeiras N linhas
-- colunas
-- tamanho
-- info
-- describe / estatísticas
-- valores nulos"""
+                return (
+                    "Consultas disponíveis:\n"
+                    "- primeiras N linhas\n"
+                    "- colunas\n"
+                    "- tamanho\n"
+                    "- info\n"
+                    "- describe / estatísticas\n"
+                    "- valores nulos"
+                )
                 
         except Exception as e:
+            print(f"[handle_basic_queries] Erro: {e}")
             return f"Erro: {str(e)}"
 
     def _extract_number(self, text: str, default: int = 5) -> int:
@@ -234,6 +266,7 @@ Pergunta: {query}
         numbers = re.findall(r'\d+', text)
         return min(int(numbers[0]), 100) if numbers else default
 
+# instancia o agente global
 agent = DataAnalysisAgent()
 
 @app.route('/')
@@ -241,6 +274,7 @@ def index():
     api_status = "Configurada" if API_KEY else "Não configurada"
     status_color = "#4CAF50" if API_KEY else "#f44336"
     
+    # HTML + JS completo (igual ao anterior, com painel, upload, chat e logs)
     html = f'''
 <!DOCTYPE html>
 <html>
@@ -456,58 +490,59 @@ def index():
 
     fileInput.addEventListener('change', (e) => uploadFile(e.target.files[0]));
 
-    async function uploadFile(file) {{
-        if (!file || !file.name.endsWith('.csv')) {{
+    async function uploadFile(file) {
+        if (!file || !file.name.endsWith('.csv')) {
             showStatus('Apenas arquivos .csv', 'error');
             return;
-        }}
+        }
 
         const formData = new FormData();
         formData.append('file', file);
         
         showStatus('Carregando...', 'success');
         
-        try {{
-            const response = await fetch('/upload', {{
+        try {
+            const response = await fetch('/upload', {
                 method: 'POST',
                 body: formData
-            }});
+            });
             const result = await response.json();
             
             showStatus(result.message, result.success ? 'success' : 'error');
             
-            if (result.success) {{
+            if (result.success) {
                 addMessage('Sistema', result.message);
                 queryInput.disabled = false;
                 sendBtn.disabled = false;
                 queryInput.focus();
-            }}
-        }} catch (error) {{
+            }
+        } catch (error) {
             showStatus('Erro: ' + error.message, 'error');
-        }}
-    }}
+        }
+    }
 
-    async function sendQuery() {{
+    async function sendQuery() {
         const query = queryInput.value.trim();
         if (!query) return;
         
         addMessage('Você', query);
         queryInput.value = '';
         
-        try {{
-            const response = await fetch('/ask', {{
+        try {
+            const response = await fetch('/ask', {
                 method: 'POST',
-                headers: {{ 'Content-Type': 'application/json' }},
-                body: JSON.stringify({{ query: query }})
-            }});
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ query: query })
+            });
             const result = await response.json();
+            console.log("Resposta do backend:", result);
             addMessage('IA', result.response, result.image);
-        }} catch (error) {{
+        } catch (error) {
             addMessage('Erro', error.message);
-        }}
-    }}
+        }
+    }
 
-    function addMessage(sender, message, image = null) {{
+    function addMessage(sender, message, image = null) {
         const div = document.createElement('div');
         let className = 'message ';
         if (sender === 'Você') className += 'user';
@@ -515,43 +550,43 @@ def index():
         else className += 'system';
         
         div.className = className;
-        div.innerHTML = `<strong>${{sender}}:</strong><pre>${{message}}</pre>`;
+        div.innerHTML = `<strong>${sender}:</strong><pre>${message}</pre>`;
         
-        if (image) {{
+        if (image) {
             const img = document.createElement('img');
-            img.src = `data:image/png;base64,${{image}}`;
+            img.src = `data:image/png;base64,${image}`;
             img.className = 'plot-image';
             div.appendChild(img);
-        }}
+        }
         
         chatMessages.appendChild(div);
         chatMessages.scrollTop = chatMessages.scrollHeight;
-    }}
+    }
 
-    function showStatus(message, type) {{
+    function showStatus(message, type) {
         const statusDiv = document.getElementById('uploadStatus');
-        statusDiv.innerHTML = `<div class="status ${{type}}">${{message}}</div>`;
+        statusDiv.innerHTML = `<div class="status ${type}">${message}</div>`;
         setTimeout(() => statusDiv.innerHTML = '', 8000);
-    }}
+    }
 
-    async function fetchLogs() {{
-        try {{
+    async function fetchLogs() {
+        try {
             const response = await fetch('/logs');
             const result = await response.json();
-            logMessages.innerHTML = result.logs.map(log => `<pre>${{log}}</pre>`).join('');
+            logMessages.innerHTML = result.logs.map(log => `<pre>${log}</pre>`).join('');
             logMessages.scrollTop = logMessages.scrollHeight;
-        }} catch (error) {{
+        } catch (error) {
             console.error('Erro ao carregar logs:', error);
-        }}
-    }}
+        }
+    }
 
     // Poll logs every 2 seconds
     setInterval(fetchLogs, 2000);
     fetchLogs(); // Initial fetch
 
-    queryInput.addEventListener('keypress', (e) => {{
+    queryInput.addEventListener('keypress', (e) => {
         if (e.key === 'Enter' && !sendBtn.disabled) sendQuery();
-    }});
+    });
     </script>
 </body>
 </html>
@@ -587,25 +622,29 @@ def upload_file():
             return jsonify({'message': f'Erro: {agent.error_message}', 'success': False}), 500
         
     except Exception as e:
+        traceback.print_exc()
         return jsonify({'message': f'Erro: {str(e)}', 'success': False}), 500
 
 @app.route('/ask', methods=['POST'])
 def ask():
     try:
-        data = request.get_json()
+        data = request.get_json(force=True)
         query = data.get('query', '')
         
         if not query:
             return jsonify({'response': 'Faça uma pergunta', 'image': None})
         
         result = agent.run_query(query)
-        return jsonify({'response': result['response'], 'image': result['image']})
+        # garante chaves no retorno
+        return jsonify({'response': result.get('response', 'Sem resposta'), 'image': result.get('image', None)})
         
     except Exception as e:
+        traceback.print_exc()
         return jsonify({'response': f'Erro: {str(e)}', 'image': None})
 
 @app.route('/logs')
 def get_logs():
+    # retorna as últimas entradas do log em JSON
     return jsonify({'logs': log_stream.logs})
 
 @app.route('/health')
